@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SketchPad - Parabola & Hyperbola</title>
+    <meta name="viewport" content="width=2160, initial-scale=1.0, user-scalable=no">
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #f8f8f8;
+            width: 100vw;
+            height: 100vh;
+        }
+        #toolbar {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255,255,255,0.9);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px #0002;
+            padding: 10px;
+            z-index: 10;
+            display: flex;
+            gap: 10px;
+        }
+        #toolbar button {
+            font-size: 1em;
+            padding: 3px 7px;
+            border: none;
+            border-radius: 4px;
+            background: #eee;
+            cursor: pointer;
+        }
+        #toolbar button.active {
+            background: #2196f3;
+            color: #fff;
+        }
+        canvas {
+            display: block;
+            background: #fff;
+            touch-action: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="toolbar">
+        <button id="draw" class="active">✏️ Draw</button>
+        <button id="parabola">∩ Parabola</button>
+        <button id="hyperbola">∞ Hyperbola</button>
+        <button id="clear">🗑️ Clear</button>
+        <button id="zoomIn">＋</button>
+        <button id="zoomOut">－</button>
+    </div>
+    <canvas id="sketch" width="2160" height="1215"></canvas>
+    <script>
+    const canvas = document.getElementById('sketch');
+    const ctx = canvas.getContext('2d');
+    let zoom = 1.0;
+    const ZOOM_STEP = 1.2;
+    const ZOOM_MIN = 0.2;
+    const ZOOM_MAX = 10;
+        let tool = 'draw';
+        let drawing = false;
+        let last = {x:0, y:0};
+        let parabolaPoints = [];
+        let hyperbolaPoints = [];
+
+        // Draw graph paper
+        function drawGrid() {
+            ctx.save();
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+            ctx.translate(canvas.width/2, canvas.height/2);
+            ctx.scale(zoom, zoom);
+            ctx.translate(-canvas.width/2, -canvas.height/2);
+            ctx.strokeStyle = "#e0e0e0";
+            ctx.lineWidth = 1/zoom;
+            // Minor grid
+            for(let x=0; x<=canvas.width; x+=30) {
+                ctx.beginPath();
+                ctx.moveTo(x,0); ctx.lineTo(x,canvas.height);
+                ctx.stroke();
+            }
+            for(let y=0; y<=canvas.height; y+=30) {
+                ctx.beginPath();
+                ctx.moveTo(0,y); ctx.lineTo(canvas.width,y);
+                ctx.stroke();
+            }
+            // Major grid
+            ctx.strokeStyle = "#b0b0b0";
+            ctx.lineWidth = 2/zoom;
+            for(let x=0; x<=canvas.width; x+=150) {
+                ctx.beginPath();
+                ctx.moveTo(x,0); ctx.lineTo(x,canvas.height);
+                ctx.stroke();
+            }
+            for(let y=0; y<=canvas.height; y+=150) {
+                ctx.beginPath();
+                ctx.moveTo(0,y); ctx.lineTo(canvas.width,y);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        // Redraw everything
+        function redraw() {
+            drawGrid();
+            // Draw all sketches and conics at normal scale (not zoomed)
+            // Redraw parabola/hyperbola previews
+            if (parabolaPoints.length === 3) drawParabola(parabolaPoints, true);
+            if (hyperbolaPoints.length === 3) drawHyperbola(hyperbolaPoints, true);
+            // Redraw user strokes
+            for (const stroke of strokes) {
+                ctx.strokeStyle = "#222";
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                for (let i=0; i<stroke.length; ++i) {
+                    const p = stroke[i];
+                    if (i===0) ctx.moveTo(p.x, p.y);
+                    else ctx.lineTo(p.x, p.y);
+                }
+                ctx.stroke();
+            }
+            // Draw all parabolas/hyperbolas
+            for (const p of parabolas) drawParabola(p, false);
+            for (const h of hyperbolas) drawHyperbola(h, false);
+        }
+
+        // Parabola: 3 points define a parabola
+        function drawParabola(points, preview) {
+            if (points.length !== 3) return;
+            // Solve for y = ax^2 + bx + c
+            const [p1, p2, p3] = points;
+            const matrix = [
+                [p1.x*p1.x, p1.x, 1],
+                [p2.x*p2.x, p2.x, 1],
+                [p3.x*p3.x, p3.x, 1]
+            ];
+            const yvec = [p1.y, p2.y, p3.y];
+            // Solve linear system
+            function solve3x3(A, b) {
+                // Cramer's rule
+                function det3(m) {
+                    return m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])
+                             - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])
+                             + m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+                }
+                const D = det3(A);
+                if (Math.abs(D) < 1e-8) return [0,0,0];
+                let Ai = JSON.parse(JSON.stringify(A));
+                for (let i=0; i<3; ++i) Ai[i][0]=b[i];
+                const Da = det3(Ai);
+                Ai = JSON.parse(JSON.stringify(A));
+                for (let i=0; i<3; ++i) Ai[i][1]=b[i];
+                const Db = det3(Ai);
+                Ai = JSON.parse(JSON.stringify(A));
+                for (let i=0; i<3; ++i) Ai[i][2]=b[i];
+                const Dc = det3(Ai);
+                return [Da/D, Db/D, Dc/D];
+            }
+            const [a, b, c] = solve3x3(matrix, yvec);
+            ctx.save();
+            ctx.strokeStyle = preview ? "#4caf50" : "#d32f2f";
+            ctx.lineWidth = preview ? 2 : 3;
+            ctx.beginPath();
+            for(let x=0; x<=canvas.width; x+=2) {
+                const y = a*x*x + b*x + c;
+                if (x===0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+            ctx.restore();
+            // Draw points
+            ctx.save();
+            ctx.fillStyle = "#4caf50";
+            for (const pt of points) {
+                ctx.beginPath();
+                ctx.arc(pt.x, pt.y, 10, 0, 2*Math.PI);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        // Hyperbola: 3 points define a simple hyperbola (y = a/(x-h) + k)
+        function drawHyperbola(points, preview) {
+            if (points.length !== 3) return;
+            // Fit y = a/(x-h) + k
+            // System: y1 = a/(x1-h)+k, y2 = a/(x2-h)+k, y3 = a/(x3-h)+k
+            // We'll use numeric approximation for h
+            const [p1, p2, p3] = points;
+            let best = null, minErr = 1e20;
+            for (let h = -canvas.width; h <= 2*canvas.width; h += 1) {
+                if (Math.abs(p1.x-h)<1e-2 || Math.abs(p2.x-h)<1e-2 || Math.abs(p3.x-h)<1e-2) continue;
+                const A = [
+                    [1/(p1.x-h), 1],
+                    [1/(p2.x-h), 1],
+                    [1/(p3.x-h), 1]
+                ];
+                const yvec = [p1.y, p2.y, p3.y];
+                // Least squares for a, k
+                function solve2x2(A, b) {
+                    const [[a1,a2],[b1,b2],[c1,c2]] = A;
+                    const [y1,y2,y3] = b;
+                    // Normal equations
+                    const S11 = a1*a1 + b1*b1 + c1*c1;
+                    const S12 = a1*a2 + b1*b2 + c1*c2;
+                    const S22 = a2*a2 + b2*b2 + c2*c2;
+                    const T1 = a1*y1 + b1*y2 + c1*y3;
+                    const T2 = a2*y1 + b2*y2 + c2*y3;
+                    const det = S11*S22 - S12*S12;
+                    if (Math.abs(det)<1e-8) return [0,0];
+                    const aa = (T1*S22 - T2*S12)/det;
+                    const kk = (T2*S11 - T1*S12)/det;
+                    return [aa, kk];
+                }
+                const [a, k] = solve2x2(A, yvec);
+                // Compute error
+                const err = Math.abs(a/(p1.x-h)+k-p1.y) + Math.abs(a/(p2.x-h)+k-p2.y) + Math.abs(a/(p3.x-h)+k-p3.y);
+                if (err < minErr) {
+                    minErr = err;
+                    best = {a, h, k};
+                }
+            }
+            if (!best) return;
+            ctx.save();
+            ctx.strokeStyle = preview ? "#ff9800" : "#1976d2";
+            ctx.lineWidth = preview ? 2 : 3;
+            ctx.beginPath();
+            let started = false;
+            for(let x=0; x<=canvas.width; x+=2) {
+                if (Math.abs(x-best.h)<1) { started=false; continue; }
+                const y = best.a/(x-best.h) + best.k;
+                if (y<0 || y>canvas.height) { started=false; continue; }
+                if (!started) { ctx.moveTo(x, y); started=true; }
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+            ctx.restore();
+            // Draw points
+            ctx.save();
+            ctx.fillStyle = "#ff9800";
+            for (const pt of points) {
+                ctx.beginPath();
+                ctx.arc(pt.x, pt.y, 10, 0, 2*Math.PI);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        // Drawing strokes
+        let strokes = [];
+        let currentStroke = [];
+        let parabolas = [];
+        let hyperbolas = [];
+
+        function setTool(t) {
+            tool = t;
+            document.querySelectorAll('#toolbar button').forEach(btn=>btn.classList.remove('active'));
+            document.getElementById(t).classList.add('active');
+            redraw();
+        }
+
+        document.getElementById('draw').onclick = ()=>setTool('draw');
+        document.getElementById('parabola').onclick = ()=>setTool('parabola');
+        document.getElementById('hyperbola').onclick = ()=>setTool('hyperbola');
+        document.getElementById('clear').onclick = ()=>{
+            strokes = [];
+            parabolas = [];
+            hyperbolas = [];
+            parabolaPoints = [];
+            hyperbolaPoints = [];
+            redraw();
+        };
+
+        // Touch/mouse events
+        function getPos(e) {
+            if (e.touches) {
+                const rect = canvas.getBoundingClientRect();
+                return {
+                    x: (e.touches[0].clientX - rect.left) * (canvas.width/rect.width),
+                    y: (e.touches[0].clientY - rect.top) * (canvas.height/rect.height)
+                };
+            } else {
+                const rect = canvas.getBoundingClientRect();
+                return {
+                    x: (e.clientX - rect.left) * (canvas.width/rect.width),
+                    y: (e.clientY - rect.top) * (canvas.height/rect.height)
+                };
+            }
+        }
+
+        function handleDown(e) {
+            if (tool === 'draw') {
+                drawing = true;
+                currentStroke = [];
+                const pos = getPos(e);
+                currentStroke.push(pos);
+                last = pos;
+            }
+        }
+        function handleMove(e) {
+            if (tool === 'draw' && drawing) {
+                const pos = getPos(e);
+                currentStroke.push(pos);
+                ctx.save();
+                ctx.strokeStyle = "#222";
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(last.x, last.y);
+                ctx.lineTo(pos.x, pos.y);
+                ctx.stroke();
+                ctx.restore();
+                last = pos;
+            }
+        }
+        function handleUp(e) {
+            if (tool === 'draw' && drawing) {
+                drawing = false;
+                if (currentStroke.length > 1) strokes.push(currentStroke);
+                currentStroke = [];
+            }
+        }
+        // Dragging logic for conic points
+        let dragPoint = null;
+        function isNear(pt, pos) {
+            return Math.hypot(pt.x - pos.x, pt.y - pos.y) < 15;
+        }
+        function handleClick(e) {
+            const pos = getPos(e);
+            // Parabola: add or drag
+            if (tool === 'parabola' || parabolaPoints.length === 3) {
+                if (parabolaPoints.length === 3) {
+                    for (let i = 0; i < 3; ++i) {
+                        if (isNear(parabolaPoints[i], pos)) {
+                            dragPoint = {type: 'parabola', idx: i};
+                            return;
+                        }
+                    }
+                } else {
+                    parabolaPoints.push(pos);
+                    redraw();
+                }
+            }
+            // Hyperbola: add or drag
+            if (tool === 'hyperbola' || hyperbolaPoints.length === 3) {
+                if (hyperbolaPoints.length === 3) {
+                    for (let i = 0; i < 3; ++i) {
+                        if (isNear(hyperbolaPoints[i], pos)) {
+                            dragPoint = {type: 'hyperbola', idx: i};
+                            return;
+                        }
+                    }
+                } else {
+                    hyperbolaPoints.push(pos);
+                    redraw();
+                }
+            }
+        }
+
+        function handleMoveConic(e) {
+            if (!dragPoint) return;
+            const pos = getPos(e);
+            if (dragPoint.type === 'parabola') {
+                parabolaPoints[dragPoint.idx] = pos;
+                redraw();
+            } else if (dragPoint.type === 'hyperbola') {
+                hyperbolaPoints[dragPoint.idx] = pos;
+                redraw();
+            }
+        }
+        function handleUpConic(e) {
+            if (dragPoint) dragPoint = null;
+        }
+
+        // Touch events
+        canvas.addEventListener('touchstart', function(e) {
+            handleDown(e);
+            handleClick(e);
+        });
+        canvas.addEventListener('touchmove', function(e) {
+            handleMove(e);
+            handleMoveConic(e);
+        });
+        canvas.addEventListener('touchend', function(e) {
+            handleUp(e);
+            handleUpConic(e);
+        });
+        canvas.addEventListener('touchcancel', function(e) {
+            handleUp(e);
+            handleUpConic(e);
+        });
+
+        // Mouse events (for desktop testing)
+        canvas.addEventListener('mousedown', function(e) {
+            handleDown(e);
+            handleClick(e);
+        });
+        canvas.addEventListener('mousemove', function(e) {
+            handleMove(e);
+            handleMoveConic(e);
+        });
+        canvas.addEventListener('mouseup', function(e) {
+            handleUp(e);
+            handleUpConic(e);
+        });
+        canvas.addEventListener('mouseleave', function(e) {
+            handleUp(e);
+            handleUpConic(e);
+        });
+
+        // Paper size controls
+        document.getElementById('applyPaper').onclick = function() {
+            const w = parseInt(document.getElementById('paperWidth').value, 10);
+            const h = parseInt(document.getElementById('paperHeight').value, 10);
+            if (w >= 100 && h >= 100) {
+                canvas.width = w;
+                canvas.height = h;
+                redraw();
+            }
+        };
+        // Zoom controls
+        document.getElementById('zoomIn').onclick = function() {
+            zoom = Math.min(zoom * ZOOM_STEP, ZOOM_MAX);
+            redraw();
+        };
+        document.getElementById('zoomOut').onclick = function() {
+            zoom = Math.max(zoom / ZOOM_STEP, ZOOM_MIN);
+            redraw();
+        };
+        canvas.addEventListener('wheel', function(e) {
+            if (e.deltaY < 0) {
+                zoom = Math.min(zoom * ZOOM_STEP, ZOOM_MAX);
+            } else {
+                zoom = Math.max(zoom / ZOOM_STEP, ZOOM_MIN);
+            }
+            redraw();
+            e.preventDefault();
+        }, {passive:false});
+        // Initial draw
+        redraw();
+    </script>
+</body>
+</html>
